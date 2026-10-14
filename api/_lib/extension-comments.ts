@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { getServiceSupabase } from './supabase.js'
 import { parseCommentTarget } from './anchor.js'
 import { reserveExtensionComment } from './extension-comment-limit.js'
+import { processExtensionImageCleanup } from './extension-image-cleanup.js'
 import { fromLegacyStatus } from './status.js'
 
 const BUCKET = 'extension-feedback-images'
@@ -10,7 +11,9 @@ const MAX_BODY = 8_000
 const MAX_SELECTOR = 1_000
 const MAX_URL = 2_048
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const MAX_BULK_IDS = 500
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export class ExtensionCommentError extends Error {
   constructor(public status: number, message: string) {
@@ -58,6 +61,151 @@ export type ExtensionComment = {
   updatedAt: string
   targetType: string
   anchor: Record<string, unknown> | null
+}
+
+export type ExtensionCommentBulkSelection =
+  | { mode: 'ids'; ids: string[] }
+  | { mode: 'all'; excludedIds: string[] }
+
+export type ExtensionCommentBulkResult = {
+  processedIds: string[]
+  skipped: Array<{ id: string; reason: 'not_in_inbox' | 'concurrent_change' | 'storage_delete_failed' | 'mutation_failed' | 'access_changed' }>
+  selectedTotal: number
+}
+
+type InboxBulkRow = { id: string; screenshot_storage_path: string | null }
+
+function bulkIds(value: unknown, name: string, allowEmpty: boolean) {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.length > MAX_BULK_IDS) {
+    throw new ExtensionCommentError(400, `${name} must contain ${allowEmpty ? `at most ${MAX_BULK_IDS}` : `between 1 and ${MAX_BULK_IDS}`} comment ids`)
+  }
+  const ids = [...new Set(value)]
+  if (ids.some((id) => typeof id !== 'string' || !UUID_PATTERN.test(id))) {
+    throw new ExtensionCommentError(400, `${name} must contain valid comment ids`)
+  }
+  return ids as string[]
+}
+
+export function parseExtensionCommentBulkSelection(value: unknown): ExtensionCommentBulkSelection {
+  if (!value || typeof value !== 'object') throw new ExtensionCommentError(400, 'selection is required')
+  const selection = value as { mode?: unknown; ids?: unknown; excludedIds?: unknown }
+  if (selection.mode === 'ids') return { mode: 'ids', ids: bulkIds(selection.ids, 'selection.ids', false) }
+  if (selection.mode === 'all') return { mode: 'all', excludedIds: bulkIds(selection.excludedIds ?? [], 'selection.excludedIds', true) }
+  throw new ExtensionCommentError(400, 'selection.mode must be ids or all')
+}
+
+async function resolveInboxBulkRows(userId: string, selection: ExtensionCommentBulkSelection) {
+  const client = getServiceSupabase()
+  const rows: InboxBulkRow[] = []
+  const excluded = new Set(selection.mode === 'all' ? selection.excludedIds : [])
+  let cursor: string | undefined
+  // Keyset pagination survives rows disappearing between pages without skipping
+  // the next page, and never relies on PostgREST's default row cap.
+  for (;;) {
+    let query = client.from('comments').select('id,screenshot_storage_path')
+      .eq('source', 'extension').eq('created_by_user_id', userId).is('project_id', null)
+      .order('id', { ascending: true }).limit(500)
+    if (selection.mode === 'ids') query = query.in('id', selection.ids)
+    if (cursor) query = query.gt('id', cursor)
+    const { data, error } = await query
+    if (error) throw new Error(error.message)
+    const page = (data as InboxBulkRow[] | null) ?? []
+    rows.push(...page.filter((row) => !excluded.has(row.id)))
+    if (page.length < 500) break
+    cursor = page[page.length - 1]!.id
+  }
+  return rows
+}
+
+function missingSelectionIds(selection: ExtensionCommentBulkSelection, rows: InboxBulkRow[]) {
+  if (selection.mode !== 'ids') return []
+  const found = new Set(rows.map((row) => row.id))
+  return selection.ids.filter((id) => !found.has(id))
+}
+
+export async function bulkAssignExtensionCommentsToProject(
+  userId: string,
+  selection: ExtensionCommentBulkSelection,
+  projectId: string,
+  visibility: 'shared' | 'internal' = 'shared',
+): Promise<ExtensionCommentBulkResult> {
+  const rows = await resolveInboxBulkRows(userId, selection)
+  const skipped: ExtensionCommentBulkResult['skipped'] = missingSelectionIds(selection, rows)
+    .map((id) => ({ id, reason: 'not_in_inbox' }))
+  if (rows.length === 0) return { processedIds: [], skipped, selectedTotal: selection.mode === 'ids' ? selection.ids.length : 0 }
+
+  const client = getServiceSupabase()
+  const processedIds: string[] = []
+  for (let offset = 0; offset < rows.length; offset += 500) {
+    try {
+      const { data, error } = await client.rpc('assign_actor_inbox_feedback', {
+        p_actor: userId, p_project: projectId, p_ids: rows.slice(offset, offset + 500).map((row) => row.id), p_visibility: visibility,
+      })
+      if (error) {
+        if (error.message === 'forbidden') throw new ExtensionCommentError(403, 'Project access changed. Review the destination and retry.')
+        throw new Error(error.message)
+      }
+      processedIds.push(...((data as Array<{ id: string }> | null) ?? []).map((row) => row.id))
+    } catch (error) {
+      if (processedIds.length === 0) throw error
+      const reason = error instanceof ExtensionCommentError ? 'access_changed' : 'mutation_failed'
+      skipped.push(...rows.slice(offset).map((row) => ({ id: row.id, reason } as const)))
+      break
+    }
+  }
+  const processed = new Set([...processedIds, ...skipped.map((item) => item.id)])
+  for (const row of rows) {
+    if (!processed.has(row.id)) skipped.push({ id: row.id, reason: 'concurrent_change' })
+  }
+  return {
+    processedIds,
+    skipped,
+    selectedTotal: selection.mode === 'ids' ? selection.ids.length : rows.length,
+  }
+}
+
+export async function bulkDeleteExtensionComments(
+  userId: string,
+  selection: ExtensionCommentBulkSelection,
+): Promise<ExtensionCommentBulkResult> {
+  const rows = await resolveInboxBulkRows(userId, selection)
+  const skipped: ExtensionCommentBulkResult['skipped'] = missingSelectionIds(selection, rows)
+    .map((id) => ({ id, reason: 'not_in_inbox' }))
+  const client = getServiceSupabase()
+  const deletedRows: InboxBulkRow[] = []
+  // Only the row snapshots returned by DELETE may have their images removed.
+  // A concurrent move, ownership change, or failed DELETE retains its image.
+  for (let offset = 0; offset < rows.length; offset += 100) {
+    try {
+      const { data, error } = await client.from('comments').delete()
+        .eq('source', 'extension').eq('created_by_user_id', userId).is('project_id', null)
+        .in('id', rows.slice(offset, offset + 100).map((row) => row.id))
+        .select('id,screenshot_storage_path')
+      if (error) throw new Error(error.message)
+      const batch = (data as InboxBulkRow[] | null) ?? []
+      deletedRows.push(...batch)
+      const paths = batch.flatMap((row) => row.screenshot_storage_path ? [row.screenshot_storage_path] : [])
+      if (paths.length) {
+        try { await processExtensionImageCleanup(paths) }
+        catch (error) { console.error('Inbox image cleanup deferred to durable queue', error) }
+      }
+    } catch (error) {
+      if (deletedRows.length === 0) throw error
+      skipped.push(...rows.slice(offset).map((row) => ({ id: row.id, reason: 'mutation_failed' } as const)))
+      break
+    }
+  }
+  const processedIds = deletedRows.map((row) => row.id)
+  const processed = new Set([...processedIds, ...skipped.map((item) => item.id)])
+  for (const row of rows) {
+    if (!processed.has(row.id)) skipped.push({ id: row.id, reason: 'concurrent_change' })
+  }
+
+  return {
+    processedIds,
+    skipped,
+    selectedTotal: selection.mode === 'ids' ? selection.ids.length : rows.length,
+  }
 }
 
 export function normalizeExtensionPageUrl(raw: unknown) {
