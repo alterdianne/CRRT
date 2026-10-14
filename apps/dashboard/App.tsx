@@ -2,7 +2,7 @@ import { WidgetAuthPage } from './components/WidgetAuthPage'
 import { useAccessReviewLink } from './hooks/useAccessReviewLink'
 import { SuggestedProjects } from './components/SuggestedProjects'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { acceptInvite as apiAcceptInvite, updateCommentVisibility as apiUpdateVisibility, updateImplementationStatus as apiUpdateImpl, updateReviewStatus as apiUpdateReview } from './api'
+import { acceptInvite as apiAcceptInvite, beginBillingCheckout, createShare, getPrompt, updateCommentVisibility as apiUpdateVisibility, updateImplementationStatus as apiUpdateImpl, updateReviewStatus as apiUpdateReview } from './api'
 import { useProjects } from './hooks/useProjects'
 import { useComments } from './hooks/useComments'
 import { useAgentSession } from './hooks/useAgentSession'
@@ -26,6 +26,7 @@ import { AddProjectPopover } from './components/AddProjectPopover'
 import { ProjectSettings } from './components/ProjectSettings'
 import { SuperAdminPanel } from './components/SuperAdminPanel'
 import { ExtensionCommentsPage } from './components/ExtensionCommentsPage'
+import { BulkActionBar } from './components/BulkActionBar'
 import { Spinner } from './components/primitives'
 import { ProductAuditPage } from './components/ProductAuditPage'
 import { ExtensionAuthPage } from './components/ExtensionAuthPage'
@@ -137,11 +138,37 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
   const canManageProject = activeProject
     ? activeProject.capabilities?.includes('project:manage') ?? true
     : false
-  const { session: agentSession, shareState: agentShareState, events: agentEvents, error: agentError, copyPrompt } = useAgentSession(API_BASE, canOpenAgentPanel && selectedProject ? selectedProject : null)
-  const agentConnected = (agentShareState?.presence?.length ?? 0) > 0
+  const readyAgentCommentIds = useMemo(
+    () => commentsProjectId === selectedProject
+      ? comments.filter((comment) => getDisplayStatus(comment) === 'ready' && comment.visibility === 'shared').map((comment) => comment.id)
+      : [],
+    [comments, commentsProjectId, selectedProject],
+  )
+  const { session: agentSession, shareState: agentShareState, events: agentEvents, error: agentError, errorCode: agentErrorCode, copyPrompt, adoptSession } = useAgentSession(
+    API_BASE,
+    accessToken,
+    canOpenAgentPanel && selectedProject ? selectedProject : null,
+    readyAgentCommentIds,
+    sidebarOpen,
+    user.id,
+  )
+  const activeAgentShare = agentShareState
+    && agentShareState.share.id === agentSession?.shareId
+    && agentShareState.project.publicKey === selectedProject
+    ? agentShareState : null
+  const agentConnected = (activeAgentShare?.presence?.length ?? 0) > 0
+  const agentQueueComments = (activeAgentShare?.comments ?? []).map(mapServerComment)
+    .filter((comment) => comment.visibility === 'shared')
   const selectedAgentMeta = AGENTS.find((a) => a.id === selectedAgent) ?? AGENTS[0]
   const [bulkMode, setBulkMode] = useState(false)
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set())
+  const bulkGeneration = useRef(0)
+  useEffect(() => {
+    bulkGeneration.current++
+    setBulkActionBusy(false)
+  }, [selectedProject, view, accessToken])
+  const [bulkActionBusy, setBulkActionBusy] = useState(false)
+  const [bulkActionError, setBulkActionError] = useState('')
   const [pendingBulkSelection, setPendingBulkSelection] = useState<{ projectKey: string; commentIds: string[] } | null>(null)
   const [bulkTransitionNotice, setBulkTransitionNotice] = useState('')
   const [addProjectError, setAddProjectError] = useState<string | null>(null)
@@ -226,6 +253,15 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
   }, [serverComments, commentsProjectId, pendingBulkSelection, pendingCommentSelection, selectedProject])
 
   const projectComments = comments
+  const selectedBulkComments = useMemo(
+    () => projectComments.filter((comment) => bulkSelectedIds.has(comment.id)),
+    [bulkSelectedIds, projectComments],
+  )
+  const selectedReadyCount = useMemo(
+    () => selectedBulkComments.filter((comment) => getDisplayStatus(comment) === 'ready').length,
+    [selectedBulkComments],
+  )
+  const allSelectedReady = selectedBulkComments.length > 0 && selectedReadyCount === selectedBulkComments.length
 
   const filteredComments = useMemo(() => {
     const filtered = statusFilter === 'all'
@@ -304,24 +340,35 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
   }, [accessToken, comments])
 
   const toggleBulkSelect = useCallback((id: string) => {
+    if (bulkActionBusy) return
+    if (!bulkSelectedIds.has(id) && bulkSelectedIds.size >= 500) {
+      setBulkActionError('Select up to 500 comments at a time.')
+      return
+    }
+    setBulkActionError('')
     setBulkSelectedIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }, [])
+  }, [bulkActionBusy, bulkSelectedIds])
 
   const exitBulkMode = useCallback(() => {
+    bulkGeneration.current++
+    setBulkActionBusy(false)
     setPendingBulkSelection(null)
     setBulkMode(false)
     setBulkSelectedIds(new Set())
     setBulkTransitionNotice('')
+    setBulkActionError('')
   }, [])
 
   const applyBulkAction = useCallback(async (action: 'ready' | 'done' | 'reject') => {
     const ids = Array.from(bulkSelectedIds)
-    if (ids.length === 0) return
+    const generation = bulkGeneration.current
+    setBulkActionBusy(true)
+    setBulkActionError('')
     const idSet = new Set(ids)
     const requests = new Map(ids.map((id) => {
       const request = Symbol(id)
@@ -336,20 +383,19 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
       if (action === 'done') return { ...c, reviewStatus: 'accepted' as ReviewStatus, implementationStatus: 'done' as ImplStatus, updatedAt: ts }
       return { ...c, reviewStatus: 'rejected' as ReviewStatus, updatedAt: ts }
     }))
-    exitBulkMode()
-
-    const calls: Promise<unknown>[] = ids.flatMap((id) => {
-      if (action === 'ready') return [apiUpdateReview(API_BASE, accessToken, id, 'accepted')]
-      if (action === 'reject') return [apiUpdateReview(API_BASE, accessToken, id, 'rejected')]
-      return [
+    const calls = ids.map(async (id) => {
+      if (action === 'ready') return apiUpdateReview(API_BASE, accessToken, id, 'accepted')
+      if (action === 'reject') return apiUpdateReview(API_BASE, accessToken, id, 'rejected')
+      await Promise.all([
         apiUpdateReview(API_BASE, accessToken, id, 'accepted'),
         apiUpdateImpl(API_BASE, accessToken, id, 'done'),
-      ]
+      ])
     })
 
     const results = await Promise.allSettled(calls)
-    const failed = results.filter((r) => r.status === 'rejected')
-    const stillCurrent = ids.some((id) => reviewRequests.current.get(id) === requests.get(id))
+    const failedIds = results.flatMap((result, index) => result.status === 'rejected' ? [ids[index]!] : [])
+    const failed = results.filter((result) => result.status === 'rejected')
+    const stillCurrent = generation === bulkGeneration.current && ids.some((id) => reviewRequests.current.get(id) === requests.get(id))
     if (failed.length > 0) {
       console.error(`Bulk ${action}: ${failed.length}/${calls.length} calls failed`, failed)
       if (stillCurrent) await refreshComments()
@@ -359,15 +405,93 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
     for (const id of ids) {
       if (reviewRequests.current.get(id) === requests.get(id)) reviewRequests.current.delete(id)
     }
-  }, [accessToken, bulkSelectedIds, exitBulkMode, refreshComments])
+    if (stillCurrent && generation === bulkGeneration.current) {
+      if (failedIds.length > 0) {
+        setBulkMode(true)
+        setBulkSelectedIds(action === 'ready' ? new Set(ids) : new Set(failedIds))
+        setBulkActionError(`${failedIds.length} item${failedIds.length === 1 ? '' : 's'} could not be updated and remain selected.`)
+      } else if (action !== 'ready') {
+        exitBulkMode()
+      }
+    }
+    if (generation === bulkGeneration.current) setBulkActionBusy(false)
+  }, [accessToken, bulkActionBusy, bulkSelectedIds, exitBulkMode, refreshComments])
+
+  const openAgentUpgrade = useCallback(async () => {
+    const generation = bulkGeneration.current
+    setBulkActionError('')
+    try {
+      const checkout = await beginBillingCheckout(API_BASE, accessToken)
+      if (generation !== bulkGeneration.current) return
+      window.location.assign(checkout.url)
+    } catch (error) {
+      if (generation !== bulkGeneration.current) return
+      setBulkActionError(error instanceof Error ? error.message : 'Could not open plan upgrade.')
+    }
+  }, [accessToken])
+
+  const handoffSelectedToAgent = useCallback(async () => {
+    const commentIds = [...bulkSelectedIds]
+    if (commentIds.length > 500) {
+      setBulkActionError('Select up to 500 comments at a time.')
+      return
+    }
+    if (commentsProjectId !== selectedProject || selectedBulkComments.length !== commentIds.length) {
+      setBulkActionError('Feedback changed. Review the selection and retry.')
+      return
+    }
+    if (!allSelectedReady) {
+      await applyBulkAction('ready')
+      return
+    }
+    if (selectedBulkComments.some((comment) => comment.visibility !== 'shared')) {
+      setBulkActionError('Only shared feedback can be sent to Agent. Update the audience or remove internal items from the selection.')
+      return
+    }
+    const generation = bulkGeneration.current
+    setBulkActionBusy(true)
+    setBulkActionError('')
+    try {
+      const share = await createShare(API_BASE, accessToken, {
+        projectId: selectedProject,
+        scopeType: 'selection',
+        commentIds,
+      })
+      if (generation !== bulkGeneration.current) return
+      if (share.commentCount !== commentIds.length) throw new Error('Feedback changed. Review the selection and retry.')
+      const result = await getPrompt(API_BASE, accessToken, share.shareId, selectedAgentMeta.target)
+      if (generation !== bulkGeneration.current) return
+      await navigator.clipboard.writeText(result.prompt)
+      if (generation !== bulkGeneration.current) return
+      adoptSession({ shareId: share.shareId, slug: share.slug, token: share.token, docUrl: share.tokenUrl }, commentIds)
+      setSidebarOpen(true)
+      setBulkTransitionNotice(`${commentIds.length} selected item${commentIds.length === 1 ? '' : 's'} copied for ${selectedAgentMeta.name}.`)
+    } catch (error) {
+      if (generation !== bulkGeneration.current) return
+      const requestError = error as Error & { code?: string }
+      if (requestError.code === 'upgrade_required') {
+        await openAgentUpgrade()
+      } else {
+        setBulkActionError(requestError.message || 'Could not send the selected feedback to Agent.')
+      }
+    } finally {
+      if (generation === bulkGeneration.current) setBulkActionBusy(false)
+    }
+  }, [accessToken, allSelectedReady, applyBulkAction, bulkActionBusy, openAgentUpgrade, selectedAgentMeta, selectedBulkComments, bulkSelectedIds, commentsProjectId, selectedProject, adoptSession])
 
   const toggleSelectAllVisible = useCallback(() => {
+    if (bulkActionBusy) return
+    setBulkActionError('')
     const visibleIds = filteredComments.map((c) => c.id)
+    if (visibleIds.length > 500) {
+      setBulkActionError('Select up to 500 comments at a time. Narrow the list or select comments individually.')
+      return
+    }
     setBulkSelectedIds((prev) => {
       const allSelected = visibleIds.every((id) => prev.has(id))
       return allSelected ? new Set() : new Set(visibleIds)
     })
-  }, [filteredComments])
+  }, [bulkActionBusy, filteredComments])
 
   const selectedIdx = filteredComments.findIndex((c) => c.id === selectedCommentId)
 
@@ -558,8 +682,8 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
     <div className="dashboard-shell">
       <Header
         agentAction={canOpenAgentPanel
-          ? <AgentLauncher readyCount={counts.ready} open={sidebarOpen} onOpen={() => setSidebarOpen(true)} />
-          : <AgentLauncher readyCount={counts.ready} open={false} disabled unavailableReason={agentUnavailableReason} />}
+          ? <AgentLauncher readyCount={readyAgentCommentIds.length} open={sidebarOpen} onOpen={() => setSidebarOpen(true)} />
+          : <AgentLauncher readyCount={readyAgentCommentIds.length} open={false} disabled unavailableReason={agentUnavailableReason} />}
         projects={projects}
         projectsLoading={projectsLoading}
         projectsError={projectsError}
@@ -612,7 +736,7 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
         />
       ) : (
       <div className="dashboard-feedback">
-        {bulkTransitionNotice && <div role="status" className="absolute left-4 right-4 top-3 z-20 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground shadow-sm">{bulkTransitionNotice}</div>}
+        {(bulkActionError || bulkTransitionNotice) && <div role={bulkActionError ? 'alert' : 'status'} className="absolute left-4 right-4 top-3 z-20 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground shadow-sm">{bulkActionError || bulkTransitionNotice}</div>}
         <CommentList
           readOnly={!canManageFeedback}
           filteredComments={filteredComments}
@@ -653,14 +777,15 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
         {sidebarOpen && canOpenAgentPanel && (
           <AgentSidebar
             selectedProject={selectedProject}
-            projectComments={projectComments}
-            readyCount={counts.ready}
+            projectComments={agentQueueComments}
+            readyCount={readyAgentCommentIds.length}
             filtered={statusFilter === 'ready'}
             selectedCommentId={selectedCommentId}
             onSelectComment={setSelectedCommentId}
             agentSession={agentSession}
             agentEvents={agentEvents}
             agentError={agentError}
+            agentErrorCode={agentErrorCode}
             agentConnected={agentConnected}
             selectedAgent={selectedAgent}
             setSelectedAgent={setSelectedAgent}
@@ -669,8 +794,34 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
             setAgentDropdownOpen={setAgentDropdownOpen}
             copyStatus={copyStatus}
             onCopySessionLink={handleCopySessionLink}
+            onUpgrade={openAgentUpgrade}
             onClose={() => setSidebarOpen(false)}
           />
+        )}
+
+        {bulkMode && canManageFeedback && (
+          <BulkActionBar selectedCount={bulkSelectedIds.size} busy={bulkActionBusy} onClose={exitBulkMode}>
+            {!allSelectedReady && (
+              <span className="dashboard-bulk-readiness" aria-live="polite">
+                {selectedReadyCount} of {selectedBulkComments.length} ready
+              </span>
+            )}
+            <button
+              type="button"
+              className="dashboard-bulk-primary"
+              disabled={bulkActionBusy}
+              onClick={() => { void handoffSelectedToAgent() }}
+            >
+              {bulkActionBusy ? 'Working…' : allSelectedReady ? `Send to ${selectedAgentMeta.name}` : 'Mark ready'}
+            </button>
+            <details className="dashboard-bulk-menu">
+              <summary aria-label="More bulk actions">Actions</summary>
+              <div role="menu">
+                <button type="button" role="menuitem" disabled={bulkActionBusy} onClick={() => { void applyBulkAction('done') }}>Mark done</button>
+                <button type="button" role="menuitem" className="dashboard-bulk-danger" disabled={bulkActionBusy} onClick={() => { void applyBulkAction('reject') }}>Reject</button>
+              </div>
+            </details>
+          </BulkActionBar>
         )}
       </div>
       )}

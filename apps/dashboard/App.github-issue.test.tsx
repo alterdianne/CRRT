@@ -17,7 +17,15 @@ const fixtures = vi.hoisted(() => ({
   acceptInvite: vi.fn(),
   updateImpl: vi.fn(),
   updateReview: vi.fn(),
+  createShare: vi.fn(),
+  getPrompt: vi.fn(),
+  beginCheckout: vi.fn(),
   agentProject: vi.fn(),
+  agentComments: vi.fn(),
+  agentEnabled: vi.fn(),
+  adoptSession: vi.fn(),
+  agentSession: null as null | { shareId: string },
+  agentShareState: null as null | Record<string, any>,
   updateVisibility: vi.fn(),
   fn: vi.fn(),
   superadmin: false,
@@ -29,6 +37,9 @@ vi.mock('./api', () => ({
   updateImplementationStatus: fixtures.updateImpl,
   updateReviewStatus: fixtures.updateReview,
   updateCommentVisibility: fixtures.updateVisibility,
+  createShare: fixtures.createShare,
+  getPrompt: fixtures.getPrompt,
+  beginBillingCheckout: fixtures.beginCheckout,
 }))
 
 vi.mock('./hooks/useAuth', () => ({
@@ -59,11 +70,14 @@ vi.mock('./hooks/useComments', () => ({
   }),
 }))
 vi.mock('./hooks/useAgentSession', () => ({
-  useAgentSession: (_apiBase: string, project: string | null) => {
+  useAgentSession: (_apiBase: string, _accessToken: string, project: string | null, ids: string[], enabled: boolean) => {
+    fixtures.agentEnabled(enabled)
     fixtures.agentProject(project)
+    fixtures.agentComments(ids)
     return ({
-    session: null,
-    shareState: null,
+    session: fixtures.agentSession,
+    adoptSession: fixtures.adoptSession,
+    shareState: fixtures.agentShareState,
     events: fixtures.comments,
     error: null,
     copyPrompt: fixtures.fn,
@@ -87,19 +101,21 @@ vi.mock('./components/CommentDetail', () => ({
     <button onClick={() => props.onVisibilityChange?.('missing-comment', 'internal')}>change missing audience</button>
   </div>,
 }))
-vi.mock('./components/Header', () => ({ Header: (props: { agentAction?: ReactNode; onAddProject: (key: string, name: string) => void; onOpenExtensionComments: () => void; onOpenSuperAdmin: () => void; selectedProject: string; extensionCommentsActive: boolean; setSelectedProject: (id: string) => void; onOpenCmd: () => void; toggleTheme: () => void; onOpenCommentActivity: (payload: { projectKey: string; latestCommentId: string }) => void }) => <>{props.agentAction}<button aria-pressed={props.extensionCommentsActive} onClick={props.onOpenExtensionComments}>my comments</button><button aria-pressed={props.selectedProject === 'project-1'} onClick={() => props.setSelectedProject('project-1')}>project</button><button onClick={() => props.onAddProject('new-project', 'New project')}>create project</button><button onClick={props.onOpenSuperAdmin}>super admin</button><button onClick={props.onOpenCmd}>search</button><button onClick={props.toggleTheme}>theme</button><button onClick={() => props.onOpenCommentActivity({ projectKey: 'project-1', latestCommentId: 'comment-1' })}>activity</button></> }))
+vi.mock('./components/Header', () => ({ Header: (props: { agentAction?: ReactNode; onAddProject: (key: string, name: string) => void; onOpenExtensionComments: () => void; onOpenSuperAdmin: () => void; selectedProject: string; extensionCommentsActive: boolean; setSelectedProject: (id: string) => void; onOpenCmd: () => void; toggleTheme: () => void; onOpenCommentActivity: (payload: { projectKey: string; latestCommentId: string }) => void }) => <>{props.agentAction}<button aria-pressed={props.extensionCommentsActive} onClick={props.onOpenExtensionComments}>my comments</button><button aria-pressed={props.selectedProject === 'project-1'} onClick={() => props.setSelectedProject('project-1')}>project</button><button onClick={() => props.setSelectedProject('project-2')}>other project</button><button onClick={() => props.onAddProject('new-project', 'New project')}>create project</button><button onClick={props.onOpenSuperAdmin}>super admin</button><button onClick={props.onOpenCmd}>search</button><button onClick={props.toggleTheme}>theme</button><button onClick={() => props.onOpenCommentActivity({ projectKey: 'project-1', latestCommentId: 'comment-1' })}>activity</button></> }))
 vi.mock('./components/CommentList', () => ({
-  CommentList: (props: { statusFilter: string; filteredComments: Array<{ claimedByAgentId: string | null }>; selectFilter: (filter: 'all') => void; toggleBulkSelect: (id: string) => void; setSelectedCommentId: (id: string) => void; applyBulkAction: (action: 'reject') => void; bulkMode: boolean; bulkSelectedIds: Set<string> }) => <>
+  CommentList: (props: { statusFilter: string; filteredComments: Array<{ claimedByAgentId: string | null }>; selectFilter: (filter: 'all') => void; enterBulkMode: () => void; toggleBulkSelect: (id: string) => void; toggleSelectAllVisible: () => void; setSelectedCommentId: (id: string) => void; applyBulkAction: (action: 'reject') => void; bulkMode: boolean; bulkSelectedIds: Set<string> }) => <>
     <span data-testid="status-filter">{props.statusFilter}</span>
     <span data-testid="first-claim">{props.filteredComments[0]?.claimedByAgentId ?? 'none'}</span>
     <span data-testid="bulk-state">{props.bulkMode ? `bulk:${[...props.bulkSelectedIds].join(',')}` : 'bulk:off'}</span>
     <button onClick={() => props.selectFilter('all')}>show all</button>
+    <button onClick={props.enterBulkMode}>enter bulk</button>
+    <button onClick={props.toggleSelectAllVisible}>select visible test comments</button>
     <button onClick={() => props.toggleBulkSelect('comment-1')}>toggle test comment</button>
     <button onClick={() => props.setSelectedCommentId('comment-1')}>select test comment</button>
     <button onClick={() => props.applyBulkAction('reject')}>bulk reject test</button>
   </>,
 }))
-vi.mock('./components/AgentSidebar', () => ({ AgentSidebar: (props: { onClose: () => void }) => <aside data-testid="agent-sidebar"><button onClick={props.onClose}>close agent sidebar</button></aside> }))
+vi.mock('./components/AgentSidebar', () => ({ AgentSidebar: (props: { onClose: () => void; projectComments: Array<{id:string;implementationStatus:string}>; agentConnected:boolean }) => <aside data-testid="agent-sidebar"><span data-testid="agent-queue">{props.agentConnected ? props.projectComments.map(c => `${c.id}:${c.implementationStatus}`).join(',') : 'disconnected'}</span><button onClick={props.onClose}>close agent sidebar</button></aside> }))
 vi.mock('./components/StatusBar', () => ({ StatusBar: (props: { personal: boolean; agentAvailable: boolean; onShowSidebar: () => void }) => <button disabled={!props.agentAvailable} onClick={props.onShowSidebar}>{props.personal ? 'personal footer' : 'project footer'}</button> }))
 vi.mock('./components/LoginPage', () => ({ LoginPage: () => <div>sign in first</div> }))
 vi.mock('./components/ResetPasswordPage', () => ({ ResetPasswordPage: () => null }))
@@ -107,7 +123,7 @@ vi.mock('./components/WelcomeScreen', () => ({ WelcomeScreen: (props: { onOpenEx
 vi.mock('./components/AddProjectPopover', () => ({ AddProjectPopover: () => null }))
 vi.mock('./components/ProjectSettings', () => ({ ProjectSettings: ({ project }: { project: { publicKey: string } }) => <div>Settings for {project.publicKey}</div> }))
 vi.mock('./components/SuperAdminPanel', () => ({ SuperAdminPanel: () => null }))
-vi.mock('./components/ExtensionCommentsPage', () => ({ ExtensionCommentsPage: (props: { onMovedToProject?: (project: string, ids: string[], skipped: number) => void }) => <div>extension page<button onClick={() => props.onMovedToProject?.('project-1', ['moved-1'], 1)}>continue moved Inbox</button><button onClick={() => props.onMovedToProject?.('project-1', ['moved-1', 'moved-2'], 0)}>continue two moved Inbox</button></div> }))
+vi.mock('./components/ExtensionCommentsPage', () => ({ ExtensionCommentsPage: (props: { onMovedToProject?: (project: string, ids: string[], skipped: number) => void }) => <div>extension page<button onClick={() => props.onMovedToProject?.('project-1', ['moved-1'], 1)}>continue moved Inbox</button><button onClick={() => props.onMovedToProject?.('project-1', ['moved-1', 'moved-2'], 0)}>continue two moved Inbox</button><button onClick={() => props.onMovedToProject?.('project-1', fixtures.comments.map(c => c.id as string), 0)}>continue oversized moved Inbox</button></div> }))
 vi.mock('./components/CommandPalette', () => ({ CommandPalette: (props: { onAction: (action: string) => void; canOperateAgent: boolean }) => <div>
   command palette
   <button onClick={() => props.onAction('accept')}>command accept</button>
@@ -126,9 +142,16 @@ beforeEach(() => {
   fixtures.claimProject.mockReset().mockResolvedValue({ publicKey: 'new-project' })
   fixtures.updateImpl.mockReset().mockResolvedValue(undefined)
   fixtures.updateReview.mockReset().mockResolvedValue(undefined)
+  fixtures.createShare.mockReset().mockResolvedValue({ shareId: 'share-1', commentCount: 1 })
+  fixtures.getPrompt.mockReset().mockResolvedValue({ prompt: 'Fix selected feedback' })
+  fixtures.beginCheckout.mockReset().mockResolvedValue({ url: 'https://checkout.example/session' })
   fixtures.fn.mockReset()
+  fixtures.agentSession = null
+  fixtures.agentShareState = null
   fixtures.agentProject.mockReset()
+  fixtures.agentComments.mockReset()
   fixtures.updateVisibility.mockReset().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } })
   fixtures.commentsProjectId = 'project-1'
   fixtures.comments.splice(0)
   fixtures.projects.splice(0, fixtures.projects.length, { publicKey: 'project-1', slug: 'project-1', name: 'Project', allowedOrigins: [], createdAt: '', updatedAt: '' })
@@ -272,6 +295,105 @@ describe('<App /> GitHub issue wiring', () => {
     await waitFor(() => expect(fixtures.fn).toHaveBeenCalled())
   })
 
+  it('keeps a bulk selection after marking it ready and hands off exactly those comments', async () => {
+    fixtures.comments.push({
+      id: 'comment-1', projectId: 'project-1', pageUrl: 'https://example.com/a', selector: 'body', x: 10, y: 20,
+      body: 'Ship this change', reviewStatus: 'open', implementationStatus: 'unassigned', claimedByAgentId: null,
+      imageUrl: null, authorName: 'Member', targetType: 'element_point', anchor: null, githubIssue: null,
+      createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'enter bulk' }))
+    fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+    expect(screen.getByText('0 of 1 ready')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mark ready' }))
+    await waitFor(() => expect(fixtures.updateReview).toHaveBeenCalledWith(
+      'https://crrt.ai/api', 'session-token', 'comment-1', 'accepted',
+    ))
+    expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Send to Claude Code' }))
+    await waitFor(() => expect(fixtures.createShare).toHaveBeenCalledWith(
+      'https://crrt.ai/api', 'session-token', {
+        projectId: 'project-1', scopeType: 'selection', commentIds: ['comment-1'],
+      },
+    ))
+    expect(fixtures.getPrompt).toHaveBeenCalledWith(
+      'https://crrt.ai/api', 'session-token', 'share-1', 'claude-code',
+    )
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('Fix selected feedback')
+    expect(screen.getByRole('status')).toHaveTextContent('1 selected item copied for Claude Code.')
+  })
+
+  it('sends an unpaid owner to checkout without dropping the selected feedback', async () => {
+    fixtures.comments.push({
+      id: 'comment-1', projectId: 'project-1', pageUrl: 'https://example.com/a', selector: 'body', x: 10, y: 20,
+      body: 'Paid handoff', reviewStatus: 'accepted', implementationStatus: 'unassigned', claimedByAgentId: null,
+      imageUrl: null, authorName: 'Owner', targetType: 'element_point', anchor: null, githubIssue: null,
+      createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    })
+    fixtures.createShare.mockRejectedValueOnce(Object.assign(new Error('Upgrade the project plan to use Agent'), {
+      status: 402, code: 'upgrade_required',
+    }))
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {})
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'enter bulk' }))
+    fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Claude Code' }))
+
+    await waitFor(() => expect(fixtures.beginCheckout).toHaveBeenCalledWith('https://crrt.ai/api', 'session-token'))
+    expect(assign).toHaveBeenCalledWith('https://checkout.example/session')
+    expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1')
+  })
+
+  it('keeps the selection when a handoff changes or checkout cannot open', async () => {
+    fixtures.comments.push({
+      id: 'comment-1', projectId: 'project-1', pageUrl: 'https://example.com/a', selector: 'body', x: 10, y: 20,
+      body: 'Retry handoff', reviewStatus: 'accepted', implementationStatus: 'unassigned', claimedByAgentId: null,
+      imageUrl: null, authorName: 'Owner', targetType: 'element_point', anchor: null, githubIssue: null,
+      createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    })
+    fixtures.createShare.mockResolvedValueOnce({ shareId: 'share-1', commentCount: 0 })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'enter bulk' }))
+    fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Claude Code' }))
+    await screen.findByText('Feedback changed. Review the selection and retry.')
+    expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1')
+
+    fixtures.createShare.mockRejectedValueOnce(Object.assign(new Error('Upgrade'), { code: 'upgrade_required' }))
+    fixtures.beginCheckout.mockRejectedValueOnce(new Error('Checkout unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Claude Code' }))
+    await screen.findByText('Checkout unavailable')
+    expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1')
+  })
+
+  it('keeps project status actions in the floating bulk menu', async () => {
+    fixtures.comments.push({
+      id: 'comment-1', projectId: 'project-1', pageUrl: 'https://example.com/a', selector: 'body', x: 10, y: 20,
+      body: 'Lifecycle action', reviewStatus: 'accepted', implementationStatus: 'unassigned', claimedByAgentId: null,
+      imageUrl: null, authorName: 'Member', targetType: 'element_point', anchor: null, githubIssue: null,
+      createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'show all' }))
+    fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+    fireEvent.click(screen.getByRole('button', { name: 'select visible test comments' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark done' }))
+    await waitFor(() => expect(fixtures.updateImpl).toHaveBeenCalledWith(
+      'https://crrt.ai/api', 'session-token', 'comment-1', 'done',
+    ))
+    await waitFor(() => expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:off'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+    fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Reject' }))
+    await waitFor(() => expect(fixtures.updateReview).toHaveBeenLastCalledWith(
+      'https://crrt.ai/api', 'session-token', 'comment-1', 'rejected',
+    ))
+  })
+
   it('does not let an older rejection response refresh over a later review choice', async () => {
     fixtures.comments.push({
       id: 'comment-1', projectId: 'project-1', pageUrl: 'https://example.com', selector: 'body', x: 10, y: 20,
@@ -410,9 +532,11 @@ describe('<App /> GitHub issue wiring', () => {
   it('keeps the live Agent session behind every available launcher path', async () => {
     render(<App />)
     const launcher = await screen.findByRole('button', { name: 'Agents, 0 ready' })
-    await waitFor(() => expect(fixtures.agentProject).toHaveBeenCalledWith('project-1'))
+    expect(fixtures.agentProject).toHaveBeenLastCalledWith('project-1')
+    expect(fixtures.agentEnabled).toHaveBeenLastCalledWith(false)
 
     fireEvent.click(launcher)
+    await waitFor(() => expect(fixtures.agentProject).toHaveBeenCalledWith('project-1'))
     expect(screen.getByTestId('agent-sidebar')).toBeInTheDocument()
     expect(launcher).toHaveAttribute('aria-expanded', 'true')
     fireEvent.click(screen.getByRole('button', { name: 'close agent sidebar' }))
@@ -592,6 +716,182 @@ it('shows a clear error when the review link targets an inaccessible project', a
   expect(await screen.findByRole('alert')).toHaveTextContent('owner or admin')
 })
 
+function readyFeedback(id: string, visibility = 'shared') {
+ return { id, projectId: 'project-1', pageUrl: 'https://example.com/a', selector: 'body', x: 10, y: 20, body: id, reviewStatus: 'accepted', implementationStatus: 'unassigned', claimedByAgentId: null, imageUrl: null, authorName: 'Member', targetType: 'element_point', anchor: null, visibility, createdAt: '2026-01-01', updatedAt: '2026-01-01' }
+}
+
+it('rejects an exact handoff when a selected comment disappears during refresh', async () => {
+ fixtures.comments = [readyFeedback('comment-1'), readyFeedback('comment-2')]
+ const view = render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'show all' }))
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'select visible test comments' }))
+ fixtures.comments = [readyFeedback('comment-1')]
+ view.rerender(<App />)
+ await screen.findByRole('button', { name: 'Agents, 1 ready' })
+ fireEvent.click(screen.getByRole('button', { name: 'Send to Claude Code' }))
+ expect(screen.getByRole('alert')).toHaveTextContent('Feedback changed')
+ expect(fixtures.createShare).not.toHaveBeenCalled()
+})
+
+it('excludes internal feedback from Agent discovery and explains an internal bulk selection', async () => {
+ fixtures.comments = [readyFeedback('comment-1'), readyFeedback('internal', 'internal')]
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'Agents, 1 ready' }))
+ expect(fixtures.agentComments).toHaveBeenLastCalledWith(['comment-1'])
+ fireEvent.click(screen.getByRole('button', { name: 'show all' }))
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'select visible test comments' }))
+ fireEvent.click(screen.getByRole('button', { name: 'Send to Claude Code' }))
+ expect(screen.getByRole('alert')).toHaveTextContent('Only shared feedback')
+ expect(fixtures.createShare).not.toHaveBeenCalled()
+})
+
+it.each(['cancel', 'navigate'])('does not resurrect old bulk failures after %s', async (action) => {
+ fixtures.comments = [readyFeedback('comment-1')]
+ let reject!: (error: Error) => void
+ fixtures.updateReview.mockReturnValueOnce(new Promise((_, fail) => { reject = fail }))
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'show all' }))
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ fireEvent.click(screen.getByRole('menuitem', { name: 'Reject' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ fireEvent.click(screen.getByRole('button', { name: 'select visible test comments' }))
+ expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1')
+ if (action === 'cancel') fireEvent.keyDown(window, { key: 'Escape' })
+ else fireEvent.click(screen.getByRole('button', { name: 'other project' }))
+ await act(async () => reject(new Error('old failure')))
+ expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:off')
+ expect(screen.queryByRole('alert')).toBeNull()
+ expect(fixtures.fn).not.toHaveBeenCalled()
+})
+
+it('does not clear a newer selection after an older successful bulk completion', async () => {
+ fixtures.comments = [readyFeedback('comment-1')]
+ let finish!: () => void
+ fixtures.updateReview.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve }))
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'show all' }))
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ fireEvent.click(screen.getByRole('menuitem', { name: 'Reject' }))
+ fireEvent.keyDown(window, { key: 'Escape' })
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ await act(async () => finish())
+ expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1')
+})
+
+it('does not restore selection after cancellation during the refresh await', async () => {
+ fixtures.comments = [readyFeedback('comment-1')]
+ let refreshed!: () => void
+ fixtures.fn.mockReturnValueOnce(new Promise<void>((resolve) => { refreshed = resolve }))
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'show all' }))
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ fireEvent.click(screen.getByRole('menuitem', { name: 'Reject' }))
+ await waitFor(() => expect(fixtures.fn).toHaveBeenCalled())
+ fireEvent.keyDown(window, { key: 'Escape' })
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ await act(async () => refreshed())
+ expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1')
+})
+
+it.each(['share', 'prompt', 'clipboard', 'failure'])('discards stale %s handoff completion after cancel', async (step) => {
+ fixtures.comments = [readyFeedback('comment-1')]
+ let finish!: (value: any) => void
+ let fail!: (value: any) => void
+ const pending = new Promise((resolve, reject) => { finish = resolve; fail = reject })
+ if (step === 'share' || step === 'failure') fixtures.createShare.mockReturnValueOnce(pending)
+ if (step === 'prompt') fixtures.getPrompt.mockReturnValueOnce(pending)
+ if (step === 'clipboard') vi.mocked(navigator.clipboard.writeText).mockReturnValueOnce(pending as Promise<void>)
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'show all' }))
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ fireEvent.click(screen.getByRole('button', { name: 'Send to Claude Code' }))
+ if (step === 'prompt') await waitFor(() => expect(fixtures.getPrompt).toHaveBeenCalled())
+ if (step === 'clipboard') await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled())
+ fireEvent.keyDown(window, { key: 'Escape' })
+ await act(async () => { if (step === 'failure') fail(new Error('old handoff')); else finish(step === 'share' ? { shareId:'share-1',commentCount:1 } : { prompt: 'old prompt' }) })
+ expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:off')
+ expect(screen.queryByRole('status')).toBeNull()
+ expect(screen.queryByRole('alert')).toBeNull()
+ if (step === 'share' || step === 'failure') expect(fixtures.getPrompt).not.toHaveBeenCalled()
+})
+
+it('retains a partially failed ready selection and leaves unselected comments untouched', async () => {
+ fixtures.comments = [readyFeedback('comment-1'), readyFeedback('other')].map(c => ({...c,reviewStatus:'open'}))
+ fixtures.updateReview.mockRejectedValueOnce(new Error('ready failed'))
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ fireEvent.click(screen.getByRole('button', { name: 'Mark ready' }))
+ await screen.findByText('1 item could not be updated and remain selected.')
+ expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1')
+ expect(fixtures.updateReview).toHaveBeenCalledTimes(1)
+})
+it('keeps only failed items after a partial multi-item rejection', async () => {
+ fixtures.comments = [readyFeedback('comment-1'), readyFeedback('comment-2'), readyFeedback('comment-3')]
+ fixtures.updateReview.mockRejectedValueOnce(new Error('one')).mockRejectedValueOnce(new Error('two'))
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'show all' }))
+ fireEvent.click(screen.getByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'select visible test comments' }))
+ fireEvent.click(screen.getByRole('menuitem', { name: 'Reject' }))
+ await screen.findByText('2 items could not be updated and remain selected.')
+ expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:comment-1,comment-2')
+})
+it('selects a notification target when its feedback arrives later', async () => {
+ const view = render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'activity' }))
+ fixtures.comments = [readyFeedback('comment-1')]
+ view.rerender(<App />)
+ await waitFor(() => expect(screen.getByTestId('detail')).toHaveTextContent(':shared'))
+})
+it('reports a non-Error checkout failure', async () => {
+ fixtures.comments = [readyFeedback('comment-1')]
+ fixtures.createShare.mockRejectedValueOnce(Object.assign(new Error('Upgrade'), {code:'upgrade_required'}))
+ fixtures.beginCheckout.mockRejectedValueOnce('offline')
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ fireEvent.click(screen.getByRole('button', { name: 'Send to Claude Code' }))
+ await screen.findByText('Could not open plan upgrade.')
+})
+it.each(['success','failure'])('discards a canceled checkout %s', async step => {
+ fixtures.comments = [readyFeedback('comment-1')]
+ fixtures.createShare.mockRejectedValueOnce(Object.assign(new Error('Upgrade'), {code:'upgrade_required'}))
+ let finish!: (value: any) => void; let fail!: (value: any) => void
+ fixtures.beginCheckout.mockReturnValueOnce(new Promise((resolve,reject) => { finish=resolve; fail=reject }))
+ const assign = vi.spyOn(window.location,'assign').mockImplementation(() => {})
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button', { name: 'enter bulk' }))
+ fireEvent.click(screen.getByRole('button', { name: 'toggle test comment' }))
+ fireEvent.click(screen.getByRole('button', { name: 'Send to Claude Code' }))
+ await waitFor(() => expect(fixtures.beginCheckout).toHaveBeenCalled())
+ fireEvent.keyDown(window,{key:'Escape'})
+ await act(async () => { if(step==='success') finish({url:'https://checkout.example'}); else fail(new Error('old checkout')) })
+ expect(assign).not.toHaveBeenCalled()
+ expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it('rejects a handoff until loaded comments belong to the current project', async () => {
+ fixtures.projects.push({publicKey:'project-2',slug:'project-2',name:'Other',allowedOrigins:[],createdAt:'',updatedAt:''})
+ fixtures.comments = [readyFeedback('comment-1')]
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button',{name:'other project'}))
+ fireEvent.click(screen.getByRole('button',{name:'show all'}))
+ fireEvent.click(screen.getByRole('button',{name:'enter bulk'}))
+ fireEvent.click(screen.getByRole('button',{name:'toggle test comment'}))
+ fireEvent.click(screen.getByRole('button',{name:'Send to Claude Code'}))
+ expect(screen.getByRole('alert')).toHaveTextContent('Feedback changed')
+ expect(fixtures.createShare).not.toHaveBeenCalled()
+})
+
 it('reports a complete multi-item Inbox move without a skipped notice', async () => {
   render(<App />)
   fireEvent.click(await screen.findByRole('button', { name: 'my comments' }))
@@ -599,6 +899,67 @@ it('reports a complete multi-item Inbox move without a skipped notice', async ()
   expect(screen.getByRole('status')).toHaveTextContent('2 Inbox items moved.')
 })
 
+it.each(['success','failure'])('handles a two-comment prompt %s without silent omissions', async step => {
+ fixtures.comments = [readyFeedback('comment-1'),readyFeedback('comment-2')]
+ fixtures.createShare.mockResolvedValueOnce({shareId:'share-1',commentCount:2})
+ if(step==='failure') fixtures.getPrompt.mockRejectedValueOnce(new Error(''))
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button',{name:'show all'}))
+ fireEvent.click(screen.getByRole('button',{name:'enter bulk'}))
+ fireEvent.click(screen.getByRole('button',{name:'select visible test comments'}))
+ fireEvent.click(screen.getByRole('button',{name:'Send to Claude Code'}))
+ if(step==='success') await screen.findByText('2 selected items copied for Claude Code.')
+ else await screen.findByText('Could not send the selected feedback to Agent.')
+ expect(fixtures.createShare).toHaveBeenCalledWith('https://crrt.ai/api','session-token',{projectId:'project-1',scopeType:'selection',commentIds:['comment-1','comment-2']})
+})
+
+
+it('refuses oversized Select all without silently selecting a subset', async () => {
+ fixtures.comments=Array.from({length:501},(_,i)=>readyFeedback(`comment-${i}`))
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button',{name:'show all'}))
+ fireEvent.click(screen.getByRole('button',{name:'enter bulk'}))
+ fireEvent.click(screen.getByRole('button',{name:'select visible test comments'}))
+ expect(screen.getByRole('alert')).toHaveTextContent('up to 500')
+ expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:')
+ expect(fixtures.createShare).not.toHaveBeenCalled()
+})
+
+it('adopts a completed bulk handoff into the Agent sidebar',async()=>{
+ fixtures.comments=[readyFeedback('comment-1')]
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button',{name:'show all'}))
+ fireEvent.click(screen.getByRole('button',{name:'enter bulk'}))
+ fireEvent.click(screen.getByRole('button',{name:'toggle test comment'}))
+ fireEvent.click(screen.getByRole('button',{name:'Send to Claude Code'}))
+ await screen.findByText('1 selected item copied for Claude Code.')
+ expect(fixtures.adoptSession).toHaveBeenCalledWith(expect.objectContaining({shareId:'share-1'}),['comment-1'])
+ expect(screen.getByTestId('agent-sidebar')).toBeInTheDocument()
+})
+
+
+it('caps individual project selection at 500',async()=>{
+ fixtures.comments=Array.from({length:500},(_,i)=>readyFeedback(`item-${i}`))
+ const view=render(<App />)
+ fireEvent.click(await screen.findByRole('button',{name:'show all'}))
+ fireEvent.click(screen.getByRole('button',{name:'enter bulk'}))
+ fireEvent.click(screen.getByRole('button',{name:'select visible test comments'}))
+ fixtures.comments=[...fixtures.comments,readyFeedback('comment-1')]
+ view.rerender(<App />)
+ fireEvent.click(screen.getByRole('button',{name:'toggle test comment'}))
+ expect(screen.getByRole('alert')).toHaveTextContent('up to 500')
+ expect(screen.getByTestId('bulk-state').textContent?.split(',')).toHaveLength(500)
+})
+
+it('rejects oversized inherited Inbox selections before requesting a handoff',async()=>{
+ fixtures.comments=Array.from({length:501},(_,i)=>readyFeedback(`item-${i}`))
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button',{name:'my comments'}))
+ fireEvent.click(screen.getByRole('button',{name:'continue oversized moved Inbox'}))
+ fireEvent.click(screen.getByRole('button',{name:'Send to Claude Code'}))
+ expect(screen.getByRole('alert')).toHaveTextContent('up to 500')
+ expect(fixtures.createShare).not.toHaveBeenCalled()
+})
 
 it('does not restore a cancelled Inbox transfer when destination comments finish loading', async () => {
   fixtures.commentsProjectId = null
@@ -613,4 +974,32 @@ it('does not restore a cancelled Inbox transfer when destination comments finish
   view.rerender(<App />)
   await waitFor(() => expect(screen.getByTestId('first-claim')).toHaveTextContent('none'))
   expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:off')
+})
+
+it('renders only active handoff feedback and its live progress, excluding unselected and internal project items', async () => {
+ fixtures.comments = [readyFeedback('selected-1'),readyFeedback('selected-2'),readyFeedback('unselected'),{...readyFeedback('internal'),visibility:'internal'}]
+ fixtures.agentSession = {shareId:'active-share'}
+ fixtures.agentShareState = {share:{id:'active-share'},project:{publicKey:'project-1'},presence:[{agentId:'local'}],comments:[
+   {...readyFeedback('selected-1'),implementationStatus:'in_progress'},
+   {...readyFeedback('selected-2'),implementationStatus:'ready_for_testing'},
+   {...readyFeedback('internal'),visibility:'internal'},
+ ]}
+ const view = render(<App />)
+ fireEvent.click(await screen.findByRole('button',{name:'Agents, 3 ready'}))
+ expect(screen.getByTestId('agent-queue')).toHaveTextContent('selected-1:in_progress,selected-2:ready_for_testing')
+ expect(screen.getByTestId('agent-queue')).not.toHaveTextContent('unselected')
+ expect(screen.getByTestId('agent-queue')).not.toHaveTextContent('internal')
+ fixtures.agentShareState = {...fixtures.agentShareState,comments:[{...readyFeedback('selected-1'),implementationStatus:'done'}]}
+ view.rerender(<App />)
+ expect(screen.getByTestId('agent-queue')).toHaveTextContent('selected-1:done')
+ expect(screen.getByTestId('agent-queue')).not.toHaveTextContent('selected-2')
+})
+it.each(['loading','missing session','stale share','wrong project','empty state'])('does not show a queue from %s',async(context)=>{
+ fixtures.comments=[readyFeedback('comment-1')]
+ fixtures.agentSession=context==='missing session'?null:{shareId:'active-share'}
+ fixtures.agentShareState=context==='loading'?null:{share:{id:context==='stale share'?'old-share':'active-share'},project:{publicKey:context==='wrong project'?'other-project':'project-1'},presence:[{agentId:'local'}],comments:context==='empty state'?[]:[readyFeedback('comment-1')]}
+ render(<App />)
+ fireEvent.click(await screen.findByRole('button',{name:'Agents, 1 ready'}))
+ expect(screen.getByTestId('agent-queue')).toHaveTextContent(context==='empty state'?'':'disconnected')
+ expect(screen.getByTestId('agent-queue')).not.toHaveTextContent('comment-1')
 })
