@@ -12,6 +12,7 @@ const fixtures = vi.hoisted(() => ({
     updatedAt: '',
   }] as Array<Record<string, unknown>>,
   comments: [] as Array<Record<string, unknown>>,
+  commentsProjectId: 'project-1' as string | null,
   claimProject: vi.fn(),
   acceptInvite: vi.fn(),
   updateImpl: vi.fn(),
@@ -51,7 +52,7 @@ vi.mock('./hooks/useProjects', () => ({
 vi.mock('./hooks/useComments', () => ({
   useComments: () => ({
     comments: fixtures.comments,
-    commentsProjectId: 'project-1',
+    commentsProjectId: fixtures.commentsProjectId,
     loading: false,
     error: null,
     refresh: fixtures.fn,
@@ -88,9 +89,10 @@ vi.mock('./components/CommentDetail', () => ({
 }))
 vi.mock('./components/Header', () => ({ Header: (props: { agentAction?: ReactNode; onAddProject: (key: string, name: string) => void; onOpenExtensionComments: () => void; onOpenSuperAdmin: () => void; selectedProject: string; extensionCommentsActive: boolean; setSelectedProject: (id: string) => void; onOpenCmd: () => void; toggleTheme: () => void; onOpenCommentActivity: (payload: { projectKey: string; latestCommentId: string }) => void }) => <>{props.agentAction}<button aria-pressed={props.extensionCommentsActive} onClick={props.onOpenExtensionComments}>my comments</button><button aria-pressed={props.selectedProject === 'project-1'} onClick={() => props.setSelectedProject('project-1')}>project</button><button onClick={() => props.onAddProject('new-project', 'New project')}>create project</button><button onClick={props.onOpenSuperAdmin}>super admin</button><button onClick={props.onOpenCmd}>search</button><button onClick={props.toggleTheme}>theme</button><button onClick={() => props.onOpenCommentActivity({ projectKey: 'project-1', latestCommentId: 'comment-1' })}>activity</button></> }))
 vi.mock('./components/CommentList', () => ({
-  CommentList: (props: { statusFilter: string; filteredComments: Array<{ claimedByAgentId: string | null }>; selectFilter: (filter: 'all') => void; toggleBulkSelect: (id: string) => void; setSelectedCommentId: (id: string) => void; applyBulkAction: (action: 'reject') => void }) => <>
+  CommentList: (props: { statusFilter: string; filteredComments: Array<{ claimedByAgentId: string | null }>; selectFilter: (filter: 'all') => void; toggleBulkSelect: (id: string) => void; setSelectedCommentId: (id: string) => void; applyBulkAction: (action: 'reject') => void; bulkMode: boolean; bulkSelectedIds: Set<string> }) => <>
     <span data-testid="status-filter">{props.statusFilter}</span>
     <span data-testid="first-claim">{props.filteredComments[0]?.claimedByAgentId ?? 'none'}</span>
+    <span data-testid="bulk-state">{props.bulkMode ? `bulk:${[...props.bulkSelectedIds].join(',')}` : 'bulk:off'}</span>
     <button onClick={() => props.selectFilter('all')}>show all</button>
     <button onClick={() => props.toggleBulkSelect('comment-1')}>toggle test comment</button>
     <button onClick={() => props.setSelectedCommentId('comment-1')}>select test comment</button>
@@ -105,7 +107,7 @@ vi.mock('./components/WelcomeScreen', () => ({ WelcomeScreen: (props: { onOpenEx
 vi.mock('./components/AddProjectPopover', () => ({ AddProjectPopover: () => null }))
 vi.mock('./components/ProjectSettings', () => ({ ProjectSettings: ({ project }: { project: { publicKey: string } }) => <div>Settings for {project.publicKey}</div> }))
 vi.mock('./components/SuperAdminPanel', () => ({ SuperAdminPanel: () => null }))
-vi.mock('./components/ExtensionCommentsPage', () => ({ ExtensionCommentsPage: () => <div>extension page</div> }))
+vi.mock('./components/ExtensionCommentsPage', () => ({ ExtensionCommentsPage: (props: { onMovedToProject?: (project: string, ids: string[], skipped: number) => void }) => <div>extension page<button onClick={() => props.onMovedToProject?.('project-1', ['moved-1'], 1)}>continue moved Inbox</button><button onClick={() => props.onMovedToProject?.('project-1', ['moved-1', 'moved-2'], 0)}>continue two moved Inbox</button></div> }))
 vi.mock('./components/CommandPalette', () => ({ CommandPalette: (props: { onAction: (action: string) => void; canOperateAgent: boolean }) => <div>
   command palette
   <button onClick={() => props.onAction('accept')}>command accept</button>
@@ -127,6 +129,7 @@ beforeEach(() => {
   fixtures.fn.mockReset()
   fixtures.agentProject.mockReset()
   fixtures.updateVisibility.mockReset().mockResolvedValue(undefined)
+  fixtures.commentsProjectId = 'project-1'
   fixtures.comments.splice(0)
   fixtures.projects.splice(0, fixtures.projects.length, { publicKey: 'project-1', slug: 'project-1', name: 'Project', allowedOrigins: [], createdAt: '', updatedAt: '' })
   fixtures.superadmin = false
@@ -508,6 +511,18 @@ describe('<App /> GitHub issue wiring', () => {
     expect(screen.queryByRole('button', { name: 'welcome comments' })).toBeNull()
   })
 
+  it('continues a moved Inbox selection in its destination project', async () => {
+    fixtures.comments.push({
+      id: 'moved-1', projectId: 'project-1', body: 'Moved feedback', reviewStatus: 'open', implementationStatus: 'unassigned',
+      claimedByAgentId: null, createdAt: '', updatedAt: '', authorName: 'You', imageUrl: null,
+    })
+    window.history.replaceState({}, '', '/?view=extension-comments')
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'continue moved Inbox' }))
+    await waitFor(() => expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:moved-1'))
+    expect(screen.getByRole('status')).toHaveTextContent('1 Inbox item moved; 1 skipped.')
+  })
+
   it('passes the authenticated API context to comment actions', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByTestId('detail')).toHaveTextContent(
@@ -575,4 +590,27 @@ it('shows a clear error when the review link targets an inaccessible project', a
   window.history.replaceState({}, '', '/?accessProject=missing')
   render(<App />)
   expect(await screen.findByRole('alert')).toHaveTextContent('owner or admin')
+})
+
+it('reports a complete multi-item Inbox move without a skipped notice', async () => {
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'my comments' }))
+  fireEvent.click(screen.getByRole('button', { name: 'continue two moved Inbox' }))
+  expect(screen.getByRole('status')).toHaveTextContent('2 Inbox items moved.')
+})
+
+
+it('does not restore a cancelled Inbox transfer when destination comments finish loading', async () => {
+  fixtures.commentsProjectId = null
+  const view = render(<App />)
+  fireEvent.click(screen.getByRole('button', { name: 'my comments' }))
+  fireEvent.click(screen.getByRole('button', { name: 'continue moved Inbox' }))
+  expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:moved-1')
+  fireEvent.keyDown(window, { key: 'Escape' })
+  expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:off')
+  fixtures.commentsProjectId = 'project-1'
+  fixtures.comments = [{ id: 'moved-1', projectId: 'project-1', body: 'Moved feedback', reviewStatus: 'open', implementationStatus: 'unassigned', createdAt: '', updatedAt: '' }]
+  view.rerender(<App />)
+  await waitFor(() => expect(screen.getByTestId('first-claim')).toHaveTextContent('none'))
+  expect(screen.getByTestId('bulk-state')).toHaveTextContent('bulk:off')
 })
