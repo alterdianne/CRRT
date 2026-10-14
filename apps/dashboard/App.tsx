@@ -748,7 +748,6 @@ function AuthenticatedApp({ accessToken, user, onSignOut }: { accessToken: strin
           exitBulkMode={exitBulkMode}
           bulkSelectedIds={bulkSelectedIds}
           toggleSelectAllVisible={toggleSelectAllVisible}
-          applyBulkAction={applyBulkAction}
           toggleBulkSelect={toggleBulkSelect}
           commentsLoading={commentsLoading}
           commentsError={commentsError}
