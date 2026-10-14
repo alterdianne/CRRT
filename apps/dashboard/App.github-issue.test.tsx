@@ -115,7 +115,7 @@ vi.mock('./components/CommentList', () => ({
   </>,
 }))
 vi.mock('./components/AgentSidebar', () => ({ AgentSidebar: (props: { onClose: () => void; projectComments: Array<{id:string;implementationStatus:string}>; agentConnected:boolean }) => <aside data-testid="agent-sidebar"><span data-testid="agent-queue">{props.agentConnected ? props.projectComments.map(c => `${c.id}:${c.implementationStatus}`).join(',') : 'disconnected'}</span><button onClick={props.onClose}>close agent sidebar</button></aside> }))
-vi.mock('./components/StatusBar', () => ({ StatusBar: (props: { personal: boolean; agentAvailable: boolean; onShowSidebar: () => void }) => <button disabled={!props.agentAvailable} onClick={props.onShowSidebar}>{props.personal ? 'personal footer' : 'project footer'}</button> }))
+vi.mock('./components/StatusBar', () => ({ StatusBar: (props: { personal: boolean }) => <div>{props.personal ? 'personal footer' : 'project footer'}</div> }))
 vi.mock('./components/LoginPage', () => ({ LoginPage: () => <div>sign in first</div> }))
 vi.mock('./components/ResetPasswordPage', () => ({ ResetPasswordPage: () => null }))
 vi.mock('./components/WelcomeScreen', () => ({ WelcomeScreen: (props: { onOpenExtensionComments: () => void }) => <button onClick={props.onOpenExtensionComments}>welcome comments</button> }))
@@ -550,10 +550,6 @@ describe('<App /> GitHub issue wiring', () => {
     fireEvent.keyDown(window, { key: 's' })
     expect(screen.queryByTestId('agent-sidebar')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'project footer' }))
-    expect(screen.getByTestId('agent-sidebar')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'close agent sidebar' }))
-
     fireEvent.click(screen.getByRole('button', { name: 'search' }))
     fireEvent.click(screen.getByRole('button', { name: 'command agent panel' }))
     expect(screen.getByTestId('agent-sidebar')).toBeInTheDocument()
@@ -572,7 +568,8 @@ describe('<App /> GitHub issue wiring', () => {
     expect(screen.queryByTestId('agent-sidebar')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'search' }))
     expect(screen.queryByRole('button', { name: 'command agent panel' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'project footer' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'project footer' })).toBeNull()
+    expect(screen.getByText('project footer')).toBeInTheDocument()
   })
 
   it('closes the Agent sidebar when leaving project feedback', async () => {
@@ -664,7 +661,7 @@ describe('<App /> GitHub issue wiring', () => {
     expect(screen.getByText('extension page')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'my comments' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'project' })).toHaveAttribute('aria-pressed', 'false')
-    fireEvent.click(screen.getByRole('button', { name: 'personal footer' }))
+    expect(screen.queryByRole('button', { name: 'personal footer' })).toBeNull()
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     expect(screen.queryByText('command palette')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'project' }))
