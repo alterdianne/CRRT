@@ -110,6 +110,7 @@ interface CommentDetailProps {
   accessToken: string
   personal?: false
   readOnly?: boolean
+  canManageStorybook?: boolean
   bodyEditor?: ReactNode
   personalActions?: ReactNode
 }
@@ -133,6 +134,7 @@ export function CommentDetail({
   accessToken,
   personal = false,
   readOnly = false,
+  canManageStorybook = false,
   bodyEditor,
   personalActions,
 }: CommentDetailProps | PersonalDetailProps) {
@@ -571,7 +573,12 @@ export function CommentDetail({
           </div>
         </div>
       ) : selectedProject && !commentsLoading && !commentsError && projectComments.length === 0 ? (
-        <ProjectEmptyState projectId={selectedProject} />
+        <ProjectEmptyState
+          projectId={selectedProject}
+          apiBase={apiBase}
+          accessToken={accessToken}
+          canManage={canManageStorybook}
+        />
       ) : (
         <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
           <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center mb-4">

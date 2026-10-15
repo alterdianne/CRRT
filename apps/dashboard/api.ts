@@ -94,6 +94,43 @@ export interface ProjectTrackerIntegration {
   reauthorizationRequired?: boolean
 }
 
+export type StorybookIntegrationState =
+  | 'not_connected'
+  | 'waiting'
+  | 'connected'
+  | 'upgrade_required'
+  | 'expired'
+
+export interface StorybookIntegration {
+  state: StorybookIntegrationState
+  command?: string
+  expiresAt?: string
+  connectionId?: string
+  storybookUrl?: string
+  connectedAt?: string
+  lastSeenAt?: string
+  message?: string
+}
+
+interface StorybookConnectionRecord {
+  id: string
+  project_key: string
+  created_by: string
+  expires_at: string
+  claimed_at: string | null
+  revoked_at: string | null
+}
+
+interface StorybookConnectionsResponse {
+  connections: StorybookConnectionRecord[]
+}
+
+interface StorybookPairingResponse {
+  code: string
+  expiresAt: string
+  connectionId: string
+}
+
 export interface ExtensionCommentRecord {
   id: string
   projectId: string | null
@@ -828,6 +865,73 @@ export function disconnectJira(apiBase: string, accessToken: string, projectKey:
     `${apiBase}/v1/projects/${encodeURIComponent(projectKey)}/integrations/jira`,
     { method: 'DELETE', headers: { ...authHeaders(accessToken) } },
   )
+}
+
+export async function getStorybookIntegration(
+  apiBase: string,
+  accessToken: string,
+  projectKey: string,
+  pendingPairing?: StorybookIntegration,
+): Promise<StorybookIntegration> {
+  const result = await requestJson<StorybookConnectionsResponse>(
+    `${apiBase}/v1/storybook/connections?projectKey=${encodeURIComponent(projectKey)}`,
+    { cache: 'no-store', headers: { ...authHeaders(accessToken) } },
+  )
+  const records = Array.isArray(result.connections) ? result.connections : []
+  // A replacement must be claimed itself; an older connection is not completion.
+  const connections = pendingPairing?.connectionId
+    ? records.filter((connection) => connection.id === pendingPairing.connectionId)
+    : records
+  const connected = connections.find(
+    (connection): connection is StorybookConnectionRecord & { claimed_at: string } =>
+      !connection.revoked_at && typeof connection.claimed_at === 'string',
+  )
+  if (connected) {
+    return {
+      state: 'connected',
+      connectionId: connected.id,
+      connectedAt: connected.claimed_at,
+    }
+  }
+
+  const latestAttempt = connections.find((connection) => !connection.revoked_at && !connection.claimed_at)
+  if (latestAttempt && Date.parse(latestAttempt.expires_at) <= Date.now()) {
+    return {
+      state: 'expired',
+      connectionId: latestAttempt.id,
+      expiresAt: latestAttempt.expires_at,
+      message: 'The last connection command expired. Generate a fresh one.',
+    }
+  }
+
+  if (latestAttempt && pendingPairing?.connectionId === latestAttempt.id && pendingPairing.command) {
+    // Only retain a code already held in memory, while the server still accepts it.
+    return { ...pendingPairing, expiresAt: latestAttempt.expires_at }
+  }
+
+  return latestAttempt
+    ? {
+        state: 'not_connected',
+        message: 'Generate a fresh command to continue. Pairing codes are never stored by CRRT.',
+      }
+    : { state: 'not_connected' }
+}
+
+export async function createStorybookPairing(apiBase: string, accessToken: string, projectKey: string): Promise<StorybookIntegration> {
+  const pairing = await requestJson<StorybookPairingResponse>(
+    `${apiBase}/v1/storybook/pairings`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(accessToken) },
+      body: JSON.stringify({ projectKey }),
+    },
+  )
+  return {
+    state: 'waiting',
+    command: `npx @thedesignproject/crrt-storybook connect --code ${pairing.code}`,
+    expiresAt: pairing.expiresAt,
+    connectionId: pairing.connectionId,
+  }
 }
 
 export function createShare(apiBase: string, accessToken: string, body: Record<string, unknown>) {

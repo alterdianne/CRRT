@@ -7,6 +7,7 @@ vi.mock('./ProjectDomainAccess', () => ({ ProjectDomainAccess: () => <div>Compan
 vi.mock('./GitHubRepositorySettings', () => ({ GitHubRepositorySettings: () => null }))
 vi.mock('./LinearIntegrationSettings', () => ({ LinearIntegrationSettings: () => null }))
 vi.mock('./JiraIntegrationSettings', () => ({ JiraIntegrationSettings: () => null }))
+vi.mock('./StorybookIntegrationSettings', () => ({ StorybookIntegrationSettings: () => <div>Storybook connection settings</div> }))
 
 import { useProjectSettings } from '../hooks/useProjectSettings'
 import { ProjectSettings } from './ProjectSettings'
@@ -328,12 +329,18 @@ describe('ProjectSettings role controls', () => {
 })
 
 it('only mounts company access controls for project managers', () => {
-  vi.mocked(useProjectSettings).mockReturnValue(settings({ isAdmin: false }) as never)
+  vi.mocked(useProjectSettings).mockReturnValue(settings({ isAdmin: false, isOwner: false }) as never)
   const { rerender } = view('member')
   expect(screen.queryByText('Company access controls')).toBeNull()
+  expect(screen.queryByText('Storybook connection settings')).toBeNull()
+  vi.mocked(useProjectSettings).mockReturnValue(settings({ isOwner: false }) as never)
+  rerender(<ProjectSettings project={project} apiBase="/api" accessToken="token" currentUserId="admin" onBack={vi.fn()} onProjectsChanged={vi.fn()} />)
+  expect(screen.getByText('Company access controls')).toBeInTheDocument()
+  expect(screen.queryByText('Storybook connection settings')).toBeNull()
   vi.mocked(useProjectSettings).mockReturnValue(settings() as never)
   rerender(<ProjectSettings project={project} apiBase="/api" accessToken="token" currentUserId="owner" onBack={vi.fn()} onProjectsChanged={vi.fn()} />)
   expect(screen.getByText('Company access controls')).toBeInTheDocument()
+  expect(screen.getByText('Storybook connection settings')).toBeInTheDocument()
 })
 
 it('keeps company access singular across repeated settings edits',()=>{
