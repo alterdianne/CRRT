@@ -1,4 +1,4 @@
-import type { ComponentPropsWithRef, MouseEvent, ReactNode } from 'react'
+import { forwardRef, type ComponentPropsWithoutRef, type ForwardedRef, type MouseEvent, type ReactNode } from 'react'
 import { cn } from '../lib/utils'
 
 /**
@@ -35,14 +35,14 @@ type ButtonOwnProps = {
 
 /** Props when `Button` renders a `<button type="button">` for an in-page action. */
 export type ButtonAsButtonProps = ButtonOwnProps &
-  Omit<ComponentPropsWithRef<'button'>, keyof ButtonOwnProps> & {
+  Omit<ComponentPropsWithoutRef<'button'>, keyof ButtonOwnProps> & {
     /** Leave unset for actions. Passing `href` renders a link instead. */
     href?: undefined
   }
 
 /** Props when `Button` renders an `<a>` for navigation. */
 export type ButtonAsLinkProps = ButtonOwnProps &
-  Omit<ComponentPropsWithRef<'a'>, keyof ButtonOwnProps> & {
+  Omit<ComponentPropsWithoutRef<'a'>, keyof ButtonOwnProps> & {
     /** Destination. Renders an `<a>`. Build dashboard paths with `route()` from `lib/routes`. */
     href: string
   }
@@ -102,7 +102,8 @@ function Content({ leftIcon, rightIcon, children }: Pick<ButtonOwnProps, 'leftIc
  * otherwise (action). Use one Primary per section or dialog, and never two
  * Primary buttons next to each other. There is no loading state.
  */
-export function Button(props: ButtonProps) {
+// forwardRef keeps refs working on React 18, which the package still supports.
+export const Button = forwardRef<HTMLButtonElement | HTMLAnchorElement, ButtonProps>(function Button(props, ref) {
   if (props.href !== undefined) {
     const { variant, size, leftIcon, rightIcon, children, className, href, disabled, onClick, ...rest } = props
     const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -115,6 +116,7 @@ export function Button(props: ButtonProps) {
     return (
       <a
         {...rest}
+        ref={ref as ForwardedRef<HTMLAnchorElement>}
         href={disabled ? undefined : href}
         role={disabled ? 'link' : rest.role}
         aria-disabled={disabled || undefined}
@@ -128,8 +130,8 @@ export function Button(props: ButtonProps) {
 
   const { variant, size, leftIcon, rightIcon, children, className, type = 'button', ...rest } = props
   return (
-    <button {...rest} type={type} className={buttonClassName({ variant, size, className })}>
+    <button {...rest} ref={ref as ForwardedRef<HTMLButtonElement>} type={type} className={buttonClassName({ variant, size, className })}>
       <Content leftIcon={leftIcon} rightIcon={rightIcon}>{children}</Content>
     </button>
   )
-}
+})

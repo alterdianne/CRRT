@@ -68,10 +68,12 @@ describe('Button', () => {
   })
 
   it('renders a link when given href', () => {
+    const ref = createRef<HTMLAnchorElement>()
     const onClick = vi.fn((event: React.MouseEvent) => event.preventDefault())
-    render(<Button href="/dashboard/settings" variant="link" onClick={onClick}>View in dashboard</Button>)
+    render(<Button ref={ref} href="/dashboard/settings" variant="link" onClick={onClick}>View in dashboard</Button>)
 
     const link = screen.getByRole('link', { name: 'View in dashboard' })
+    expect(link).toBe(ref.current)
     expect(link.tagName).toBe('A')
     expect(link).toHaveAttribute('href', '/dashboard/settings')
     expect(link).not.toHaveAttribute('aria-disabled')
