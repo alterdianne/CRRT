@@ -2,11 +2,20 @@ import type { StorybookConfig } from '@storybook/react-vite'
 import { fileURLToPath } from 'node:url'
 
 const config: StorybookConfig = {
-  stories: ['../stories/**/*.mdx', '../stories/**/*.stories.@(ts|tsx)'],
+  stories: [
+    '../stories/**/*.mdx',
+    '../stories/**/*.stories.@(ts|tsx)',
+    { directory: '../apps/dashboard', files: '**/*.stories.tsx', titlePrefix: 'Dashboard' },
+  ],
+  staticDirs: ['../public'],
   addons: [
-    '@storybook/addon-docs',
+    '@chromatic-com/storybook',
+    '@storybook/addon-vitest',
     '@storybook/addon-a11y',
+    '@storybook/addon-docs',
     '@storybook/addon-themes',
+    '@storybook/addon-mcp',
+    'msw-storybook-addon',
   ],
   framework: {
     name: '@storybook/react-vite',

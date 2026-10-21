@@ -23,3 +23,5 @@ supabase/.branches/_current_branch
 
 # Dependency links used by isolated local worktrees
 /node_modules
+
+*storybook.log

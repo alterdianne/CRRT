@@ -7,6 +7,8 @@ Figma file. Components so far:
 - **Button** (`apps/dashboard/components/Button.tsx`): a **Docs** page with the
   prop table and stories, and a **Usage** page (`Button.mdx`) with rules and
   common mistakes.
+- Colocated dashboard stories cover Button interactions, AgentLauncher,
+  StatusBar, ProjectPrivacy, and BillingPage under **Dashboard**.
 
 Use Node 20.19+ or 22.12+ (Node 24 is supported) and Bun 1.4+:
 
@@ -19,6 +21,7 @@ Open http://127.0.0.1:6006. To check types or create a static build:
 
 ```sh
 bun run typecheck:storybook
+bun run test:storybook
 bun run build-storybook
 ```
 
@@ -26,7 +29,7 @@ The static output is `storybook-static/` and is ignored by Git.
 
 ## Adding components
 
-- Add `ComponentName.stories.tsx` under `stories/`, using `Meta` and `StoryObj`
+- Add `ComponentName.stories.tsx` beside the component in `apps/dashboard/`, using `Meta` and `StoryObj`
   from `@storybook/react-vite`. Import the selected component from its existing
   implementation rather than duplicating it.
 - Add documentation as `.mdx` files in this directory. Autodocs is enabled for
@@ -39,13 +42,25 @@ The static output is `storybook-static/` and is ignored by Git.
   `tsconfig.check.json`). Document every prop with a JSDoc comment.
 - Put a JSDoc comment above each story; it becomes that story's description.
   Counter-examples for MDX pages use `tags: ['!dev', '!autodocs']`.
-- Use per-story decorators for any providers and fixtures the component needs.
-  Configure public assets via `staticDirs` when needed, and keep dashboard
+- Add shared providers and loaders in `.storybook/preview.tsx`. MSW handlers in
+  `.storybook/msw-handlers.ts` supply billing and privacy fixtures; story-level
+  `beforeEach` hooks can override responses through `msw.use`. The fixtures use
+  a reserved test domain and require no credentials. Keep dashboard
   links/assets using the existing `route()` and `asset()` helpers.
 
 Configuration lives in `.storybook/`. Its dedicated Vite configuration enables
 Tailwind without inheriting the widget's library build, dashboard deployment
 paths, or local `.env` files. It does not start an API or require Supabase.
+
+The Vitest `storybook` project runs in Chromium and includes a `CssCheck` story
+that verifies the dashboard's primary color and button height. On a fresh machine,
+run `bunx playwright install chromium` before the first browser test. The normal
+`bun run test` and `bun run test:coverage` commands run both unit and story tests;
+use `bunx vitest run --project unit` to run only the existing unit tests.
+
+The installer also adds accessibility, MCP, and Chromatic integrations. Accessibility
+findings are reported with `test: 'todo'`; they do not fail CI. Chromatic visual
+testing requires connecting a Chromatic project separately.
 
 The independently maintained addon playground in `packages/crrt-storybook/`
 continues to use its own configuration and port 6007.
